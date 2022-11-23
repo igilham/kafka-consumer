@@ -31,7 +31,11 @@ async function run() {
         return;
       }
 
+      Object.entries(message.headers).forEach(([header, value]) => {
+        console.log(`[${header}]: ${value}`);
+      });
       console.log(JSON.stringify(JSON.parse(messageString), null, 2));
+      console.log("\n");
     },
   });
 }
