@@ -1,6 +1,6 @@
 import { IHeaders, Kafka } from "kafkajs";
 
-const TOPIC = "CI_Campaign_Moderation_Dev";
+const TOPIC = "CI_Campaign_Item_Moderation_Dev";
 const FROM_BEGINNING = true;
 
 const DEV = [
@@ -44,7 +44,7 @@ async function run() {
 
   consumer.run({
     eachMessage: async ({ message }) => {
-      const messageString = message.value?.toString();
+      const messageString = message.value?.toString() ?? '';
       if (!messageString) {
         console.log('empty message');
       }
