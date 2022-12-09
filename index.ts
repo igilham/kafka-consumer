@@ -1,4 +1,4 @@
-import { IHeaders, Kafka } from "kafkajs";
+import { Consumer, EachMessagePayload, IHeaders, Kafka } from "kafkajs";
 import { program } from "commander";
 import { exit } from "process";
 
@@ -9,6 +9,8 @@ const DEV_BROKERS = [
   "b-2.smtip-kafka-cluster-w.h52s5m.c14.kafka.us-east-1.amazonaws.com:9094",
   "b-3.smtip-kafka-cluster-w.h52s5m.c14.kafka.us-east-1.amazonaws.com:9094",
 ];
+
+let firstMessage = true;
 
 const getHeaders = (
   messageHeaders?: IHeaders
@@ -28,68 +30,99 @@ const getHeaders = (
   return headers;
 };
 
-async function main() {
-  program
-    .name("kafka consumer")
-    .description("Subscribes to a kafka topic and prints out messages")
-    .version("0.0.1")
-    .option(
-      "-b, --from-beginning",
-      "start reading from the oldest available message",
-      false
-    )
-    .option("-t, --topic <string>", "topic to read from")
-    .option(
-      "-g, --group-id <string>",
-      "group ID of the subscriber",
-      DEFAULT_GROUP_ID
-    );
-  program.parse();
-  const options = program.opts();
+type Options = {
+  outputFile?: string;
+  groupId: string;
+  topic: string;
+  fromBeginning: boolean;
+};
 
-  if (!options.topic) {
-    console.error("topic not specified");
-    exit(1);
+class App {
+  private readonly kafka: Kafka;
+  private readonly consumer: Consumer;
+
+  constructor(private readonly options: Options) {
+    this.options = options;
+    this.kafka = new Kafka({
+      ssl: true,
+      brokers: DEV_BROKERS,
+      logLevel: 2,
+    });
+
+    this.consumer = this.kafka.consumer({
+      groupId: this.options.groupId,
+    });
   }
 
-  const kafka = new Kafka({
-    ssl: true,
-    brokers: DEV_BROKERS,
-    logLevel: 2,
-  });
+  async main(): Promise<void> {
+    await this.consumer.connect();
 
-  const consumer = kafka.consumer({
-    groupId: options.groupId,
-  });
-  await consumer.connect();
+    await this.consumer.subscribe({
+      topic: this.options.topic,
+      fromBeginning: this.options.fromBeginning ?? false,
+    });
+    console.log("subscribed consumer");
 
-  await consumer.subscribe({
-    topic: options.topic,
-    fromBeginning: options.fromBeginning ?? false,
-  });
+    await this.consumer.run({
+      autoCommit: false,
+      eachMessage: this.onMessage,
+    });
+  }
 
-  await consumer.run({
-    autoCommit: false,
-    eachMessage: async ({ message }) => {
-      const messageString = message.value?.toString() ?? "";
-      if (messageString.length === 0) {
-        console.log("empty message");
-        return;
-      }
-      const headers = getHeaders(message.headers);
+  async shutdown(): Promise<void> {
+    await this.consumer.disconnect();
+    console.log("\n]\n");
+  }
 
-      console.log(
-        JSON.stringify(
-          {
-            headers,
-            value: JSON.parse(messageString),
-          },
-          null,
-          2
-        )
-      );
-    },
-  });
+  async onMessage({ message }: EachMessagePayload) {
+    const messageString = message.value?.toString();
+    if (!messageString) {
+      return;
+    }
+
+    const output = {
+      headers: getHeaders(message.headers),
+      value: JSON.parse(messageString),
+    };
+
+    if (firstMessage) {
+      firstMessage = false;
+      console.log("[\n");
+    } else {
+      console.log(",\n");
+    }
+    console.log(JSON.stringify(output, null, 2));
+  }
 }
 
-main();
+program
+  .name("kafka consumer")
+  .description("Subscribes to a kafka topic and prints out messages")
+  .version("0.0.1")
+  .option(
+    "-b, --from-beginning",
+    "start reading from the oldest available message",
+    false
+  )
+  .option("-t, --topic <string>", "topic to read from")
+  .option(
+    "-g, --group-id <string>",
+    "group ID of the subscriber",
+    DEFAULT_GROUP_ID
+  );
+program.parse();
+const options = program.opts();
+
+if (!options.topic) {
+  console.error("topic not specified");
+  exit(1);
+}
+
+const app = new App(options as Options);
+
+process.on("SIGINT", async function () {
+  await app.shutdown();
+  process.exit();
+});
+
+app.main();

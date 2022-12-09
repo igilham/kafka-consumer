@@ -3,3 +3,5 @@
 
 *.js
 yarn.lock
+log.json
+*.log
