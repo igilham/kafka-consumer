@@ -1,4 +1,10 @@
-import { Consumer, EachMessagePayload, IHeaders, Kafka } from "kafkajs";
+import {
+  Consumer,
+  EachMessageHandler,
+  EachMessagePayload,
+  IHeaders,
+  Kafka,
+} from "kafkajs";
 import { program } from "commander";
 import { exit } from "process";
 
@@ -10,7 +16,17 @@ const DEV_BROKERS = [
   "b-3.smtip-kafka-cluster-w.h52s5m.c14.kafka.us-east-1.amazonaws.com:9094",
 ];
 
-let firstMessage = true;
+type HeaderFilter = {
+  key: string;
+  value: string;
+};
+
+type Options = {
+  fromBeginning: boolean;
+  topic: string;
+  groupId: string;
+  filter?: HeaderFilter;
+};
 
 const getHeaders = (
   messageHeaders?: IHeaders
@@ -30,11 +46,17 @@ const getHeaders = (
   return headers;
 };
 
-type Options = {
-  outputFile?: string;
-  groupId: string;
-  topic: string;
-  fromBeginning: boolean;
+const parseFilter = (s?: string): HeaderFilter | undefined => {
+  if (s) {
+    const tokens = s.trim().split("=");
+    if (tokens.length === 2) {
+      return {
+        key: tokens[0],
+        value: tokens[1],
+      };
+    }
+  }
+  return undefined;
 };
 
 class App {
@@ -42,7 +64,6 @@ class App {
   private readonly consumer: Consumer;
 
   constructor(private readonly options: Options) {
-    this.options = options;
     this.kafka = new Kafka({
       ssl: true,
       brokers: DEV_BROKERS,
@@ -65,7 +86,7 @@ class App {
 
     await this.consumer.run({
       autoCommit: false,
-      eachMessage: this.onMessage,
+      eachMessage: this.handler(),
     });
   }
 
@@ -74,24 +95,35 @@ class App {
     console.log("\n]\n");
   }
 
-  async onMessage({ message }: EachMessagePayload) {
-    const messageString = message.value?.toString();
-    if (!messageString) {
-      return;
-    }
+  // we can't use `this` in the message handler, so we capture the options in a closure
+  private handler(): EachMessageHandler {
+    const opts = this.options;
+    let firstMessage = true;
+    return async ({ message }: EachMessagePayload): Promise<void> => {
+      const messageString = message.value?.toString();
+      if (!messageString) {
+        return;
+      }
+      const headers = getHeaders(message.headers);
 
-    const output = {
-      headers: getHeaders(message.headers),
-      value: JSON.parse(messageString),
+      // filter un-matched eventType if configured
+      if (opts.filter && headers[opts.filter.key] !== opts.filter.value) {
+        return;
+      }
+
+      const output = {
+        headers,
+        value: JSON.parse(messageString),
+      };
+
+      if (firstMessage) {
+        firstMessage = false;
+        console.log("[\n");
+      } else {
+        console.log(",\n");
+      }
+      console.log(JSON.stringify(output, null, 2));
     };
-
-    if (firstMessage) {
-      firstMessage = false;
-      console.log("[\n");
-    } else {
-      console.log(",\n");
-    }
-    console.log(JSON.stringify(output, null, 2));
   }
 }
 
@@ -109,6 +141,10 @@ program
     "-g, --group-id <string>",
     "group ID of the subscriber",
     DEFAULT_GROUP_ID
+  )
+  .option(
+    "-f, --filter <string>",
+    "header to filter for (e.g. eventType=OPEN)"
   );
 program.parse();
 const options = program.opts();
@@ -118,7 +154,14 @@ if (!options.topic) {
   exit(1);
 }
 
-const app = new App(options as Options);
+const opts: Options = {
+  fromBeginning: options.fromBeginning,
+  topic: options.topic,
+  groupId: options.groupId,
+  filter: parseFilter(options.filter),
+};
+
+const app = new App(opts);
 
 process.on("SIGINT", async function () {
   await app.shutdown();
